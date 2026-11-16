@@ -1,0 +1,16 @@
+[Unit]
+Description=Whisper Flow - ditado por voz (Groq)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/whisper-flow
+# Configuração em ~/.config/whisper-flow/.env (lido pelo próprio programa)
+Restart=on-failure
+RestartSec=2
+Nice=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target
