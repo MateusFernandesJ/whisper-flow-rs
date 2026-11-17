@@ -12,7 +12,7 @@ USER_CONFIG_DIR := $(HOME)/.config/whisper-flow-rs
 help:
 	@printf '%s\n' \
 		'make -f .make download      Clona o projeto em APP_DIR' \
-		'make -f .make update        Atualiza, testa e executa a migração' \
+		'make -f .make update        Atualiza, testa, compila e reinstala' \
 		'make -f .make migrate       Executa a migração whisper-flow-rs' \
 		'make -f .make test          Executa os testes Rust' \
 		'make -f .make build         Compila o release' \
@@ -33,7 +33,9 @@ download:
 update:
 	git pull --ff-only
 	$(MAKE) -f "$(MAKE_FILE)" test
-	$(MAKE) -f "$(MAKE_FILE)" migrate
+	$(MAKE) -f "$(MAKE_FILE)" build
+	$(MAKE) -f "$(MAKE_FILE)" install-files
+	$(MAKE) -f "$(MAKE_FILE)" restart
 
 migrate:
 	./scripts/migrate-whisper-flow-rs.sh
