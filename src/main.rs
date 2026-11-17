@@ -1,4 +1,4 @@
-//! whisper-flow — ditado por voz via Groq (Whisper), para rodar como serviço systemd de usuário.
+//! whisper-flow-rs — ditado por voz via Groq (Whisper), para rodar como serviço systemd de usuário.
 //!
 //! Atalho: Ctrl+Espaço inicia/para a gravação (lido direto do evdev, funciona em Wayland e X11).
 //! Feedback: apenas sons (início, fim, erro). Nenhuma notificação.
@@ -53,7 +53,7 @@ const HOTKEY_DEBOUNCE: Duration = Duration::from_millis(300);
 const RPM_LIMIT: usize = 20;
 const RPM_WARN: usize = 15;
 const RPM_WINDOW: Duration = Duration::from_secs(60);
-const VKBD_NAME: &str = "whisper-flow-virtual-kbd";
+const VKBD_NAME: &str = "whisper-flow-rs-virtual-kbd";
 
 // ───────────────────────────── utilidades ─────────────────────────────
 
@@ -100,7 +100,7 @@ fn parse_dotenv(src: &str) -> HashMap<String, String> {
 }
 
 impl Env {
-    /// Lê UMA vez na inicialização: $WHISPER_ENV ou ~/.config/whisper-flow/.env
+    /// Lê UMA vez na inicialização: $WHISPER_ENV ou ~/.config/whisper-flow-rs/.env
     fn load() -> Self {
         let path = env::var("WHISPER_ENV").ok().map(PathBuf::from).or_else(|| {
             let base = env::var("XDG_CONFIG_HOME")
@@ -108,7 +108,7 @@ impl Env {
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from)
                 .or_else(|| env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))?;
-            Some(base.join("whisper-flow/.env"))
+            Some(base.join("whisper-flow-rs/.env"))
         });
         let map = path
             .and_then(|p| fs::read_to_string(&p).ok().map(|s| (p, s)))
@@ -816,7 +816,7 @@ fn encode_ogg_opus(pcm: &[i16]) -> Result<EncodedAudio, String> {
             .map_err(io_err)?;
 
         // "OpusTags"
-        let vendor = b"whisper-flow";
+        let vendor = b"whisper-flow-rs";
         let mut tags = Vec::new();
         tags.extend_from_slice(b"OpusTags");
         tags.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
@@ -1437,7 +1437,7 @@ fn main() {
     let (tx, rx) = mpsc::channel::<HotkeyEvent>();
     spawn_hotkey_watcher(tx, app.cfg.hotkey, app.cfg.hotkey2);
     eprintln!(
-        "whisper-flow pronto. Atalho: {} (microfone, {:?}) | {} (área de transferência, {:?}) | idioma: {}",
+        "whisper-flow-rs pronto. Atalho: {} (microfone, {:?}) | {} (área de transferência, {:?}) | idioma: {}",
         app.cfg.hotkey_label,
         app.cfg.microphone_mode,
         app.cfg.hotkey2_label,

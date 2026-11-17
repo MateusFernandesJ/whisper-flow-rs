@@ -1,11 +1,11 @@
 SHELL := /usr/bin/env bash
 
 REPO_URL ?= https://github.com/MateusFernandesJ/whisper-flow-rs.git
-APP_DIR ?= $(HOME)/.local/src/whisper-flow
+APP_DIR ?= $(HOME)/.local/src/whisper-flow-rs
 MAKE_FILE := $(abspath $(lastword $(MAKEFILE_LIST)))
-SERVICE := whisper-flow.service
+SERVICE := whisper-flow-rs.service
 USER_SYSTEMD_DIR := $(HOME)/.config/systemd/user
-USER_CONFIG_DIR := $(HOME)/.config/whisper-flow
+USER_CONFIG_DIR := $(HOME)/.config/whisper-flow-rs
 
 .PHONY: help download update test build install install-files permissions restart logs
 
@@ -41,10 +41,10 @@ install:
 	$(MAKE) -f "$(MAKE_FILE)" install-files
 
 install-files:
-	install -Dm755 target/release/whisper-flow "$(HOME)/.local/bin/whisper-flow"
-	install -Dm644 whisper-flow.service "$(USER_SYSTEMD_DIR)/$(SERVICE)"
+	install -Dm755 target/release/whisper-flow-rs "$(HOME)/.local/bin/whisper-flow-rs"
+	install -Dm644 whisper-flow-rs.service "$(USER_SYSTEMD_DIR)/$(SERVICE)"
 	@if [[ ! -e "$(USER_CONFIG_DIR)/.env" ]]; then \
-		install -Dm600 whisper-flow.env "$(USER_CONFIG_DIR)/.env"; \
+		install -Dm600 whisper-flow-rs.env "$(USER_CONFIG_DIR)/.env"; \
 		echo "Configuração criada em $(USER_CONFIG_DIR)/.env"; \
 	else \
 		echo "Preservando configuração existente em $(USER_CONFIG_DIR)/.env"; \

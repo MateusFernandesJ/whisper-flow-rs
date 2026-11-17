@@ -1,12 +1,12 @@
 [Unit]
-Description=Whisper Flow - ditado por voz (Groq)
+Description=Whisper Flow RS - ditado por voz (Groq)
 After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/whisper-flow
-# Configuração em ~/.config/whisper-flow/.env (lido pelo próprio programa)
+ExecStart=%h/.local/bin/whisper-flow-rs
+# Configuração em ~/.config/whisper-flow-rs/.env (lido pelo próprio programa)
 Restart=on-failure
 RestartSec=2
 Nice=5

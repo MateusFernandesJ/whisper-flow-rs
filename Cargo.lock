@@ -1724,7 +1724,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "whisper-flow"
+name = "whisper-flow-rs"
 version = "0.2.0"
 dependencies = [
  "cpal",

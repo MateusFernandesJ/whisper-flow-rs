@@ -1,4 +1,4 @@
-# whisper-flow
+# whisper-flow-rs
 
 Ditado por voz para Linux usando o Whisper via Groq. Pressione um atalho global para iniciar e encerrar a gravação; o texto transcrito é inserido no aplicativo em foco.
 
@@ -62,11 +62,11 @@ make -f .make restart
 make -f .make logs
 ```
 
-Para baixar uma cópia nova em `~/.local/src/whisper-flow`:
+Para baixar uma cópia nova em `~/.local/src/whisper-flow-rs`:
 
 ```bash
 make -f .make download
-cd "$HOME/.local/src/whisper-flow"
+cd "$HOME/.local/src/whisper-flow-rs"
 make -f .make install
 ```
 
@@ -84,11 +84,11 @@ Os destinos individuais também estão disponíveis: `test`, `build`, `install`,
 Crie a configuração do usuário a partir do exemplo:
 
 ```bash
-mkdir -p "$HOME/.config/whisper-flow"
-install -Dm600 whisper-flow.env "$HOME/.config/whisper-flow/.env"
+mkdir -p "$HOME/.config/whisper-flow-rs"
+install -Dm600 whisper-flow-rs.env "$HOME/.config/whisper-flow-rs/.env"
 ```
 
-Edite `~/.config/whisper-flow/.env` e defina a chave do Groq:
+Edite `~/.config/whisper-flow-rs/.env` e defina a chave do Groq:
 
 ```dotenv
 GROQ_API_KEY=gsk_...
@@ -110,35 +110,35 @@ As opções principais são:
 | `WHISPER_PASTE` | `ctrl+v` | Combinação usada no modo `paste`: `ctrl+v`, `ctrl+shift+v` ou `shift+insert`. |
 | `WHISPER_VOLUME` | `1.0` | Volume dos sons de feedback, de `0.0` a `2.0`. |
 
-O arquivo [`whisper-flow.env`](whisper-flow.env) contém a lista completa de teclas aceitas e exemplos de configuração.
+O arquivo [`whisper-flow-rs.env`](whisper-flow-rs.env) contém a lista completa de teclas aceitas e exemplos de configuração.
 
 ## Executar como serviço
 
 Instale a unidade do systemd e inicie o serviço:
 
 ```bash
-install -Dm644 whisper-flow.service \
-  "$HOME/.config/systemd/user/whisper-flow.service"
+install -Dm644 whisper-flow-rs.service \
+  "$HOME/.config/systemd/user/whisper-flow-rs.service"
 systemctl --user daemon-reload
-systemctl --user enable --now whisper-flow
+systemctl --user enable --now whisper-flow-rs
 ```
 
 Veja os logs:
 
 ```bash
-journalctl --user -u whisper-flow -f
+journalctl --user -u whisper-flow-rs -f
 ```
 
 Depois de alterar o `.env`:
 
 ```bash
-systemctl --user restart whisper-flow
+systemctl --user restart whisper-flow-rs
 ```
 
 Para parar e desabilitar o serviço:
 
 ```bash
-systemctl --user disable --now whisper-flow
+systemctl --user disable --now whisper-flow-rs
 ```
 
 ## Uso
