@@ -70,11 +70,15 @@ cd "$HOME/.local/src/whisper-flow-rs"
 make -f .make install
 ```
 
-Para atualizar uma cópia já clonada, testar, recompilar e reiniciar:
+Para atualizar uma cópia já clonada, testar e executar automaticamente a migração segura:
 
 ```bash
 make -f .make update
 ```
+
+O alvo `update` executa `scripts/migrate-whisper-flow-rs.sh`, que recompila, instala o
+binário/service novos, migra o `.env`, desativa o serviço antigo e remove apenas artefatos
+antigos verificados. Para executar somente essa migração, use `make -f .make migrate`.
 
 Os destinos individuais também estão disponíveis: `test`, `build`, `install`, `permissions`,
 `restart` e `logs`. Use `make -f .make help` para listá-los.

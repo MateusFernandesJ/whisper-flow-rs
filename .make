@@ -7,12 +7,13 @@ SERVICE := whisper-flow-rs.service
 USER_SYSTEMD_DIR := $(HOME)/.config/systemd/user
 USER_CONFIG_DIR := $(HOME)/.config/whisper-flow-rs
 
-.PHONY: help download update test build install install-files permissions restart logs
+.PHONY: help download update migrate test build install install-files permissions restart logs
 
 help:
 	@printf '%s\n' \
 		'make -f .make download      Clona o projeto em APP_DIR' \
-		'make -f .make update        Atualiza, testa, compila e reinstala' \
+		'make -f .make update        Atualiza, testa e executa a migração' \
+		'make -f .make migrate       Executa a migração whisper-flow-rs' \
 		'make -f .make test          Executa os testes Rust' \
 		'make -f .make build         Compila o release' \
 		'make -f .make install       Instala binário, unidade e .env inicial' \
@@ -32,9 +33,10 @@ download:
 update:
 	git pull --ff-only
 	$(MAKE) -f "$(MAKE_FILE)" test
-	$(MAKE) -f "$(MAKE_FILE)" build
-	$(MAKE) -f "$(MAKE_FILE)" install-files
-	$(MAKE) -f "$(MAKE_FILE)" restart
+	$(MAKE) -f "$(MAKE_FILE)" migrate
+
+migrate:
+	./scripts/migrate-whisper-flow-rs.sh
 
 install:
 	$(MAKE) -f "$(MAKE_FILE)" build
