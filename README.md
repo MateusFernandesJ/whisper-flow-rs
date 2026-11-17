@@ -79,6 +79,19 @@ make -f .make update
 Os destinos individuais também estão disponíveis: `test`, `build`, `install`, `permissions`,
 `restart` e `logs`. Use `make -f .make help` para listá-los.
 
+### Migrar uma instalação antiga
+
+Para migrar uma instalação que ainda usa `whisper-flow`, execute na raiz do projeto:
+
+```bash
+DRY_RUN=1 ./scripts/migrate-whisper-flow-rs.sh
+./scripts/migrate-whisper-flow-rs.sh
+```
+
+O script recompila o release, cria o novo binário/service/configuração, desativa o serviço
+antigo e só remove arquivos antigos quando a configuração é idêntica e os binários/service
+correspondem aos artefatos esperados. Arquivos alterados são preservados e reportados.
+
 ## Configuração
 
 Crie a configuração do usuário a partir do exemplo:
