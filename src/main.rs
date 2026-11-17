@@ -17,10 +17,10 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     env,
     f32::consts::PI,
-    fs, io,
-    io::Write,
+    fs,
+    io::{self, Read, Write},
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError},
@@ -136,10 +136,16 @@ const MOD_SHIFT: u8 = 2;
 const MOD_ALT: u8 = 4;
 const MOD_META: u8 = 8;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct Hotkey {
     mods: u8,
-    key: Key,
+    key: Option<Key>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HotkeyEvent {
+    hotkey: Hotkey,
+    pressed: bool,
 }
 
 const KEY_NAMES: &[(&str, Key)] = &[
@@ -191,7 +197,9 @@ fn parse_hotkey(s: &str) -> Result<Hotkey, String> {
             }
         }
     }
-    let key = key.ok_or("falta a tecla principal (ex.: space)")?;
+    if key.is_none() && mods == 0 {
+        return Err("falta a tecla principal ou um modificador".to_string());
+    }
     Ok(Hotkey { mods, key })
 }
 
@@ -227,15 +235,34 @@ enum PasteCombo {
     ShiftInsert,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum MonitorMode {
+    Toggle,
+    Hold,
+}
+
+fn load_mode(env: &Env, key: &str) -> MonitorMode {
+    match env.get(key).unwrap_or_default().to_lowercase().as_str() {
+        "hold" | "push-to-talk" | "push_to_talk" => MonitorMode::Hold,
+        "" | "toggle" => MonitorMode::Toggle,
+        other => {
+            eprintln!("{key} inválido ({other:?}); usando toggle");
+            MonitorMode::Toggle
+        }
+    }
+}
+
 struct Config {
     model: String,
     /// None = detecção automática do idioma.
     language: Option<String>,
     hotkey: Hotkey,
     hotkey_label: String,
+    microphone_mode: MonitorMode,
     /// Atalho alternativo: captura o áudio de SAÍDA (monitor do headset), não do microfone.
-    hotkey2: Hotkey,
+    hotkey2: Option<Hotkey>,
     hotkey2_label: String,
+    monitor_mode: MonitorMode,
     /// Quando true, a transcrição vai só para a área de transferência (sem colar).
     clipboard_only: bool,
     api_key: Option<String>,
@@ -266,19 +293,28 @@ impl Config {
             }
         };
 
-        let hk2_raw = env
-            .get("WHISPER_HOTKEY2")
-            .unwrap_or_else(|| DEFAULT_HOTKEY2.to_string());
-        let (hotkey2, hotkey2_label) = match parse_hotkey(&hk2_raw) {
-            Ok(h) => (h, hk2_raw.to_lowercase()),
-            Err(e) => {
-                eprintln!("WHISPER_HOTKEY2 inválido ({e}); usando {DEFAULT_HOTKEY2}");
-                (
-                    parse_hotkey(DEFAULT_HOTKEY2).expect("atalho padrão válido"),
-                    DEFAULT_HOTKEY2.to_string(),
-                )
+        let (hotkey2, hotkey2_label) = match env.get("WHISPER_HOTKEY2") {
+            Some(raw) if matches!(raw.to_lowercase().as_str(), "off" | "none" | "disabled" | "false" | "0") => {
+                (None, "desativado".to_string())
             }
+            Some(raw) => match parse_hotkey(&raw) {
+                Ok(h) => (Some(h), raw.to_lowercase()),
+                Err(e) => {
+                    eprintln!("WHISPER_HOTKEY2 inválido ({e}); usando {DEFAULT_HOTKEY2}");
+                    (
+                        Some(parse_hotkey(DEFAULT_HOTKEY2).expect("atalho padrão válido")),
+                        DEFAULT_HOTKEY2.to_string(),
+                    )
+                }
+            },
+            None => (
+                Some(parse_hotkey(DEFAULT_HOTKEY2).expect("atalho padrão válido")),
+                DEFAULT_HOTKEY2.to_string(),
+            ),
         };
+
+        let microphone_mode = load_mode(env, "WHISPER_HOTKEY_MODE");
+        let monitor_mode = load_mode(env, "WHISPER_HOTKEY2_MODE");
 
         // Só ativa o clipboard-only se o atalho2 estiver definido (o padrão está).
         let clipboard_only = true;
@@ -307,8 +343,10 @@ impl Config {
             language,
             hotkey,
             hotkey_label,
+            microphone_mode,
             hotkey2,
             hotkey2_label,
+            monitor_mode,
             clipboard_only,
             api_key: env.get("GROQ_API_KEY"),
             output,
@@ -457,7 +495,9 @@ fn play_cue(cue: Cue, volume: f32) {
 // ───────────────────────────── captura ─────────────────────────────
 
 struct Recorder {
-    stream: cpal::Stream,
+    stream: Option<cpal::Stream>,
+    capture: Option<Child>,
+    reader: Option<thread::JoinHandle<()>>,
     buf: Arc<Mutex<Vec<f32>>>,
     rate: u32,
     started: Instant,
@@ -486,6 +526,12 @@ where
         |e| eprintln!("Erro no stream de entrada: {e}"),
         None,
     )
+}
+
+fn append_s16le_mono(dst: &mut Vec<f32>, bytes: &[u8]) {
+    for sample in bytes.chunks_exact(2) {
+        dst.push(i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32768.0);
+    }
 }
 
 impl Recorder {
@@ -517,7 +563,14 @@ impl Recorder {
             .play()
             .map_err(|e| format!("Falha ao iniciar {what}: {e}"))?;
 
-        Ok(Recorder { stream, buf, rate, started: Instant::now() })
+        Ok(Recorder {
+            stream: Some(stream),
+            capture: None,
+            reader: None,
+            buf,
+            rate,
+            started: Instant::now(),
+        })
     }
 
     fn start() -> Result<Self, String> {
@@ -528,41 +581,71 @@ impl Recorder {
         Self::open(device, "microfone")
     }
 
-    /// Captura o áudio de SAÍDA: percorre os dispositivos de saída e usa o primeiro que
-    /// suporta loopback (monitor). PipeWire/Pulse: "Monitor of ..."; ALSA: "Loopback ...".
+    /// Captura o áudio do sink padrão pelo monitor PulseAudio/ PipeWire.
     fn from_output_device() -> Result<Self, String> {
-        let host = cpal::default_host();
-        let devices = host
-            .output_devices()
-            .map_err(|e| format!("Não foi listar dispositivos de saída: {e}"))?;
-
-        let mut names = Vec::new();
-        for d in devices {
-            let name = d.name().unwrap_or_else(|_| "?".to_string());
-            let name_l = name.to_lowercase();
-            let is_monitor = name_l.contains("monitor")
-                || name_l.contains("loopback")
-                || name_l.contains("capture");
-            if !is_monitor {
-                continue;
-            }
-            names.push(name.clone());
-            match Self::open(d, &name) {
-                Ok(rec) => {
-                    eprintln!("Áudio de saída capturado de {name:?}");
-                    return Ok(rec);
-                }
-                Err(e) => {
-                    eprintln!("Monitor {name:?} indisponível ({e}); tentando outro.");
-                }
-            }
+        let sink = Command::new("pactl")
+            .arg("get-default-sink")
+            .output()
+            .map_err(|e| format!("Não foi possível consultar o sink padrão: {e}"))?;
+        if !sink.status.success() {
+            return Err("pactl não conseguiu consultar o sink padrão".to_string());
         }
-        let listed = if names.is_empty() {
-            "nenhum".to_string()
-        } else {
-            names.join(", ")
-        };
-        Err(format!("Nenhum monitor de áudio encontrado. Dispositivos de saída: {listed}"))
+        let sink = String::from_utf8_lossy(&sink.stdout);
+        let sink = sink.trim();
+        if sink.is_empty() {
+            return Err("O sink padrão do PipeWire está vazio".to_string());
+        }
+        let monitor = format!("{sink}.monitor");
+
+        let mut child = Command::new("parec")
+            .args([
+                "--device",
+                &monitor,
+                "--format=s16le",
+                "--rate=48000",
+                "--channels=1",
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Não foi possível iniciar parec: {e}"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("parec não forneceu a saída de áudio")?;
+        let buf = Arc::new(Mutex::new(Vec::with_capacity(48_000 * 30)));
+        let reader_buf = Arc::clone(&buf);
+        let reader = thread::spawn(move || {
+            let mut reader = io::BufReader::new(stdout);
+            let mut bytes = [0u8; 8192];
+            let mut pending = Vec::new();
+            loop {
+                match reader.read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        pending.extend_from_slice(&bytes[..n]);
+                        let complete = pending.len() & !1;
+                        let mut b = lock(&reader_buf);
+                        append_s16le_mono(&mut b, &pending[..complete]);
+                        drop(b);
+                        pending.drain(..complete);
+                    }
+                    Err(e) => {
+                        eprintln!("Erro ao ler áudio do PipeWire: {e}");
+                        break;
+                    }
+                }
+            }
+        });
+
+        eprintln!("Áudio de saída capturado de {monitor:?} (PipeWire)");
+        Ok(Recorder {
+            stream: None,
+            capture: Some(child),
+            reader: Some(reader),
+            buf,
+            rate: 48_000,
+            started: Instant::now(),
+        })
     }
 
     /// Descarta o que foi capturado até agora (o próprio som de "início" vaza pelo microfone).
@@ -572,8 +655,15 @@ impl Recorder {
     }
 
     fn stop(self) -> (Vec<f32>, u32) {
-        let Recorder { stream, buf, rate, .. } = self;
+        let Recorder { stream, mut capture, reader, buf, rate, .. } = self;
         drop(stream); // fecha o microfone antes de qualquer coisa
+        if let Some(child) = capture.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(reader) = reader {
+            let _ = reader.join();
+        }
         let samples = std::mem::take(&mut *lock(&*buf));
         (samples, rate)
     }
@@ -1102,7 +1192,7 @@ fn is_hotkey_keyboard(device: &Device, hk: Hotkey) -> bool {
         return false;
     }
     device.supported_keys().map_or(false, |k| {
-        k.contains(hk.key)
+        hk.key.map_or(true, |key| k.contains(key))
             && (hk.mods & MOD_CTRL == 0 || k.contains(Key::KEY_LEFTCTRL) || k.contains(Key::KEY_RIGHTCTRL))
             && (hk.mods & MOD_SHIFT == 0 || k.contains(Key::KEY_LEFTSHIFT) || k.contains(Key::KEY_RIGHTSHIFT))
             && (hk.mods & MOD_ALT == 0 || k.contains(Key::KEY_LEFTALT) || k.contains(Key::KEY_RIGHTALT))
@@ -1122,12 +1212,14 @@ fn held_mods(h: u8) -> u8 {
 fn listen_device(
     mut device: Device,
     path: PathBuf,
-    tx: mpsc::Sender<Hotkey>,
+    tx: mpsc::Sender<HotkeyEvent>,
     active: Arc<Mutex<HashSet<PathBuf>>>,
     hk1: Hotkey,
-    hk2: Hotkey,
+    hk2: Option<Hotkey>,
 ) {
     let mut held: u8 = 0;
+    let mut active_hotkeys: HashSet<Hotkey> = HashSet::new();
+    let candidates = [Some(hk1), hk2];
 
     while let Ok(events) = device.fetch_events() {
         for ev in events {
@@ -1151,14 +1243,45 @@ fn listen_device(
                 } else {
                     held &= !bit;
                 }
+                let mods = held_mods(held);
+                let released: Vec<_> = active_hotkeys
+                    .iter()
+                    .copied()
+                    .filter(|hk| mods != hk.mods)
+                    .collect();
+                for hk in released {
+                    active_hotkeys.remove(&hk);
+                    let _ = tx.send(HotkeyEvent { hotkey: hk, pressed: false });
+                }
+                if val == 1 {
+                    if let Some(hk) = candidates.iter().copied().flatten().find(|hk| {
+                        hk.key.is_none() && mods == hk.mods
+                    }) {
+                        if active_hotkeys.insert(hk) {
+                            let _ = tx.send(HotkeyEvent { hotkey: hk, pressed: true });
+                        }
+                    }
+                }
                 continue;
             }
-            // val == 1: só o pressionar (ignora soltar=0 e auto-repetição=2)
-            let matched = [hk1, hk2].iter().copied().find(|hk| {
-                val == 1 && key == hk.key && held_mods(held) == hk.mods
-            });
-            if let Some(hk) = matched {
-                let _ = tx.send(hk);
+            if val == 1 {
+                let matched = candidates.iter().copied().flatten().find(|hk| {
+                    hk.key == Some(key) && held_mods(held) == hk.mods
+                });
+                if let Some(hk) = matched {
+                    if active_hotkeys.insert(hk) {
+                        let _ = tx.send(HotkeyEvent { hotkey: hk, pressed: true });
+                    }
+                }
+            } else if val == 0 {
+                let matched = active_hotkeys
+                    .iter()
+                    .copied()
+                    .find(|hk| hk.key == Some(key));
+                if let Some(hk) = matched {
+                    active_hotkeys.remove(&hk);
+                    let _ = tx.send(HotkeyEvent { hotkey: hk, pressed: false });
+                }
             }
         }
     }
@@ -1168,7 +1291,7 @@ fn listen_device(
 
 /// Varre /dev/input a cada 3 s: teclados USB/Bluetooth conectados depois do boot funcionam.
 /// Escuta dois atalhos distintos; cada teclado abre uma única thread que filtra ambos.
-fn spawn_hotkey_watcher(tx: mpsc::Sender<Hotkey>, hk1: Hotkey, hk2: Hotkey) {
+fn spawn_hotkey_watcher(tx: mpsc::Sender<HotkeyEvent>, hk1: Hotkey, hk2: Option<Hotkey>) {
     thread::spawn(move || {
         let active: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
         let mut warned = false;
@@ -1204,7 +1327,8 @@ fn spawn_hotkey_watcher(tx: mpsc::Sender<Hotkey>, hk1: Hotkey, hk2: Hotkey) {
                             }
                         };
                         // Abre o teclado se suportar QUALQUER um dos dois atalhos.
-                        if !is_hotkey_keyboard(&device, hk1) && !is_hotkey_keyboard(&device, hk2) {
+                        let supports_hk2 = hk2.map_or(false, |hk| is_hotkey_keyboard(&device, hk));
+                        if !is_hotkey_keyboard(&device, hk1) && !supports_hk2 {
                             continue;
                         }
                         lock(&*active).insert(path.clone());
@@ -1310,44 +1434,85 @@ fn main() {
         processing: AtomicBool::new(false),
     });
 
-    let (tx, rx) = mpsc::channel::<Hotkey>();
+    let (tx, rx) = mpsc::channel::<HotkeyEvent>();
     spawn_hotkey_watcher(tx, app.cfg.hotkey, app.cfg.hotkey2);
     eprintln!(
-        "whisper-flow pronto. Atalho: {} (microfone) | {} (área de transferência) | idioma: {}",
+        "whisper-flow pronto. Atalho: {} (microfone, {:?}) | {} (área de transferência, {:?}) | idioma: {}",
         app.cfg.hotkey_label,
+        app.cfg.microphone_mode,
         app.cfg.hotkey2_label,
+        app.cfg.monitor_mode,
         app.cfg.language.as_deref().unwrap_or("auto")
     );
 
     let mut recorder: Option<Recorder> = None;
+    let mut recording_clipboard_only = false;
+    let mut recording_mode = MonitorMode::Toggle;
     let mut last_toggle: Option<Instant> = None;
 
     loop {
         match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(hk) => {
+            Ok(event) => {
+                let hk = event.hotkey;
+                if !event.pressed {
+                    let same_hotkey = if recording_clipboard_only {
+                        app.cfg.hotkey2 == Some(hk)
+                    } else {
+                        hk == app.cfg.hotkey
+                    };
+                    if recording_mode == MonitorMode::Hold && same_hotkey {
+                        if let Some(rec) = recorder.take() {
+                            if recording_clipboard_only {
+                                finish_monitor(&app, rec);
+                            } else {
+                                finish_recording(&app, rec);
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if last_toggle.map_or(false, |t| t.elapsed() < HOTKEY_DEBOUNCE) {
                     continue;
                 }
                 last_toggle = Some(Instant::now());
 
-                // Mesmo atalho inicia/para. O atalho2 (área de transferência) só inicia.
-                if hk == app.cfg.hotkey {
-                    if let Some(rec) = recorder.take() {
-                        finish_recording(&app, rec);
-                        continue;
+                // Cada modo inicia/para com o próprio atalho; outro atalho enquanto grava é erro.
+                if let Some(rec) = recorder.take() {
+                    let same_mode = if recording_clipboard_only {
+                        app.cfg.hotkey2 == Some(hk)
+                    } else {
+                        hk == app.cfg.hotkey
+                    };
+                    if same_mode {
+                        if recording_mode == MonitorMode::Toggle {
+                            if recording_clipboard_only {
+                                finish_monitor(&app, rec);
+                            } else {
+                                finish_recording(&app, rec);
+                            }
+                        } else {
+                            recorder = Some(rec);
+                        }
+                    } else {
+                        recorder = Some(rec);
+                        play_cue(Cue::Error, app.cfg.volume);
                     }
-                    if app.processing.load(Ordering::SeqCst) {
-                        play_cue(Cue::Error, app.cfg.volume); // ainda transcrevendo a anterior
-                        continue;
-                    }
+                    continue;
+                }
+                if app.processing.load(Ordering::SeqCst) {
+                    play_cue(Cue::Error, app.cfg.volume); // ainda transcrevendo a anterior
+                    continue;
+                }
 
+                if hk == app.cfg.hotkey {
                     // Abre o microfone ANTES do aviso (sem perder o começo da fala) e descarta
                     // o que foi capturado durante o som para ele não entrar na transcrição.
                     match Recorder::start() {
                         Ok(mut rec) => {
                             play_cue_blocking(Cue::Start, app.cfg.volume);
                             rec.discard();
-                            while rx.try_recv().is_ok() {} // ignora toques duplicados durante o aviso
+                            recording_clipboard_only = false;
+                            recording_mode = app.cfg.microphone_mode;
                             recorder = Some(rec);
                         }
                         Err(e) => {
@@ -1355,17 +1520,14 @@ fn main() {
                             play_cue(Cue::Error, app.cfg.volume);
                         }
                     }
-                } else {
-                    // Atalho2: captura o áudio de SAÍDA e col só na área de transferência.
-                    if recorder.is_some() || app.processing.load(Ordering::SeqCst) {
-                        play_cue(Cue::Error, app.cfg.volume);
-                        continue;
-                    }
+                } else if app.cfg.hotkey2 == Some(hk) {
+                    // Atalho2: captura o áudio de SAÍDA e cola só na área de transferência.
                     match Recorder::from_output_device() {
                         Ok(mut rec) => {
                             play_cue_blocking(Cue::Start, app.cfg.volume);
                             rec.discard();
-                            while rx.try_recv().is_ok() {}
+                            recording_clipboard_only = true;
+                            recording_mode = app.cfg.monitor_mode;
                             recorder = Some(rec);
                         }
                         Err(e) => {
@@ -1382,9 +1544,11 @@ fn main() {
                 if expired {
                     eprintln!("Limite de {MAX_RECORD_SECS}s atingido; encerrando gravação.");
                     if let Some(rec) = recorder.take() {
-                        // Não sabemos qual atalho acionou a gravação atual; a saída é a mesma
-                        // para os dois (área de transferência é o modo mais seguro).
-                        finish_monitor(&app, rec);
+                        if recording_clipboard_only {
+                            finish_monitor(&app, rec);
+                        } else {
+                            finish_recording(&app, rec);
+                        }
                     }
                 }
             }
@@ -1412,7 +1576,7 @@ mod tests {
     #[test]
     fn hotkey2_parsing_default() {
         let h = parse_hotkey(DEFAULT_HOTKEY2).unwrap();
-        assert_eq!(h, Hotkey { mods: MOD_CTRL | MOD_SHIFT, key: Key::KEY_SPACE });
+        assert_eq!(h, Hotkey { mods: MOD_CTRL | MOD_SHIFT, key: Some(Key::KEY_SPACE) });
     }
 
     #[test]
@@ -1429,14 +1593,29 @@ mod tests {
     #[test]
     fn hotkey_parsing() {
         let h = parse_hotkey("Ctrl+Space").unwrap();
-        assert_eq!(h, Hotkey { mods: MOD_CTRL, key: Key::KEY_SPACE });
+        assert_eq!(h, Hotkey { mods: MOD_CTRL, key: Some(Key::KEY_SPACE) });
         let h = parse_hotkey("ctrl + shift + F9").unwrap();
-        assert_eq!(h, Hotkey { mods: MOD_CTRL | MOD_SHIFT, key: Key::KEY_F9 });
+        assert_eq!(h, Hotkey { mods: MOD_CTRL | MOD_SHIFT, key: Some(Key::KEY_F9) });
         assert_eq!(parse_hotkey("pause").unwrap().mods, 0);
         assert!(parse_hotkey("ctrl+").is_err());
-        assert!(parse_hotkey("ctrl+shift").is_err());
+        assert_eq!(parse_hotkey("control+super").unwrap().key, None);
         assert!(parse_hotkey("a+b").is_err());
         assert!(parse_hotkey("ctrl+banana").is_err());
+    }
+
+    #[test]
+    fn monitor_configuration_supports_disable_and_hold() {
+        let env = Env(std::collections::HashMap::from([
+            ("WHISPER_HOTKEY".to_string(), "control+super".to_string()),
+            ("WHISPER_HOTKEY_MODE".to_string(), "hold".to_string()),
+            ("WHISPER_HOTKEY2".to_string(), "off".to_string()),
+            ("WHISPER_HOTKEY2_MODE".to_string(), "toggle".to_string()),
+        ]));
+        let cfg = Config::load(&env);
+        assert_eq!(cfg.hotkey2, None);
+        assert_eq!(cfg.hotkey.key, None);
+        assert_eq!(cfg.microphone_mode, MonitorMode::Hold);
+        assert_eq!(cfg.monitor_mode, MonitorMode::Toggle);
     }
 
     #[test]
@@ -1472,6 +1651,14 @@ mod tests {
         let w = encode_wav(&[0i16; 160]);
         assert_eq!(&w.bytes[0..4], b"RIFF");
         assert_eq!(w.bytes.len(), 44 + 320);
+    }
+
+    #[test]
+    fn pipewire_pcm_decodes_little_endian_samples() {
+        let mut samples = Vec::new();
+        append_s16le_mono(&mut samples, &[0x00, 0x40, 0x00, 0xc0]);
+        assert!((samples[0] - 0.5).abs() < 0.0001);
+        assert!((samples[1] + 0.5).abs() < 0.0001);
     }
 
     #[test]

@@ -13,24 +13,71 @@ O programa roda como serviço `systemd --user`, funciona em Wayland e X11, não 
 - uma chave de API do [Groq](https://console.groq.com/keys);
 - `wl-copy` para Wayland e `xdotool` para X11. `ydotool` é opcional.
 
-Em distribuições baseadas em Debian/Ubuntu:
+## Dependências por distribuição
+
+Arch Linux:
 
 ```bash
-sudo apt install build-essential pkg-config libasound2-dev libopus-dev wl-clipboard xdotool
+sudo pacman -S --needed base-devel git rust alsa-lib opus pkgconf cmake wl-clipboard xdotool libpulse pipewire-pulse
 ```
+
+Fedora:
+
+```bash
+sudo dnf install cargo gcc gcc-c++ make git alsa-lib-devel opus-devel pkgconf cmake wl-clipboard xdotool pulseaudio-utils pipewire-pulseaudio
+```
+
+Linux Mint:
+
+```bash
+sudo apt update
+sudo apt install build-essential cargo git pkg-config libasound2-dev libopus-dev cmake wl-clipboard xdotool pulseaudio-utils
+```
+
+`pactl` e `parec` são usados para capturar o monitor PipeWire/PulseAudio. Em sistemas
+com PipeWire, mantenha o serviço de compatibilidade PulseAudio (`pipewire-pulse`) ativo.
 
 Se o programa não conseguir ler o teclado ou criar o teclado virtual, confira as permissões do grupo `input` e faça login novamente após adicioná-lo:
 
 ```bash
 sudo usermod -aG input "$USER"
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' | sudo tee /etc/udev/rules.d/80-uinput.rules
+echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+sudo modprobe uinput
+sudo udevadm control --reload-rules
+sudo udevadm trigger
 ```
+
+Faça logout/login depois de adicionar o usuário ao grupo `input`.
 
 ## Compilação e instalação
 
+O arquivo `.make` concentra os comandos de teste, build, instalação, atualização e serviço:
+
 ```bash
-cargo build --release
-install -Dm755 target/release/whisper-flow "$HOME/.local/bin/whisper-flow"
+make -f .make test
+make -f .make install
+make -f .make permissions
+make -f .make restart
+make -f .make logs
 ```
+
+Para baixar uma cópia nova em `~/.local/src/whisper-flow`:
+
+```bash
+make -f .make download
+cd "$HOME/.local/src/whisper-flow"
+make -f .make install
+```
+
+Para atualizar uma cópia já clonada, testar, recompilar e reiniciar:
+
+```bash
+make -f .make update
+```
+
+Os destinos individuais também estão disponíveis: `test`, `build`, `install`, `permissions`,
+`restart` e `logs`. Use `make -f .make help` para listá-los.
 
 ## Configuração
 
@@ -55,8 +102,10 @@ As opções principais são:
 | --- | --- | --- |
 | `GROQ_MODEL` | `whisper-large-v3-turbo` | Modelo usado na transcrição. |
 | `WHISPER_LANG` | `pt-br` | Idioma da fala; também aceita `auto`, `en`, `es` etc. |
-| `WHISPER_HOTKEY` | `ctrl+space` | Atalho global para iniciar/parar (microfone). |
-| `WHISPER_HOTKEY2` | `ctrl+shift+space` | Atalho para capturar o áudio de SAÍDA (headset) e jogar a transcrição só na área de transferência. |
+| `WHISPER_HOTKEY` | `ctrl+space` | Atalho global para iniciar/parar (microfone); aceita também combinações só de modificadores, como `ctrl+super`. |
+| `WHISPER_HOTKEY_MODE` | `toggle` | Modo do microfone: `toggle` ou `hold`. |
+| `WHISPER_HOTKEY2` | `ctrl+shift+space` | Atalho para capturar o áudio de saída; use `off`, `none`, `disabled`, `false` ou `0` para desativar. |
+| `WHISPER_HOTKEY2_MODE` | `toggle` | `toggle` inicia/para com dois toques; `hold` captura enquanto o atalho estiver pressionado. |
 | `WHISPER_OUTPUT` | `auto` | Saída: `auto`, `paste`, `xdotool` ou `ydotool`. |
 | `WHISPER_PASTE` | `ctrl+v` | Combinação usada no modo `paste`: `ctrl+v`, `ctrl+shift+v` ou `shift+insert`. |
 | `WHISPER_VOLUME` | `1.0` | Volume dos sons de feedback, de `0.0` a `2.0`. |
