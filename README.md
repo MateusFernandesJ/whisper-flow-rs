@@ -55,7 +55,8 @@ As opções principais são:
 | --- | --- | --- |
 | `GROQ_MODEL` | `whisper-large-v3-turbo` | Modelo usado na transcrição. |
 | `WHISPER_LANG` | `pt-br` | Idioma da fala; também aceita `auto`, `en`, `es` etc. |
-| `WHISPER_HOTKEY` | `ctrl+space` | Atalho global para iniciar/parar. |
+| `WHISPER_HOTKEY` | `ctrl+space` | Atalho global para iniciar/parar (microfone). |
+| `WHISPER_HOTKEY2` | `ctrl+shift+space` | Atalho para capturar o áudio de SAÍDA (headset) e jogar a transcrição só na área de transferência. |
 | `WHISPER_OUTPUT` | `auto` | Saída: `auto`, `paste`, `xdotool` ou `ydotool`. |
 | `WHISPER_PASTE` | `ctrl+v` | Combinação usada no modo `paste`: `ctrl+v`, `ctrl+shift+v` ou `shift+insert`. |
 | `WHISPER_VOLUME` | `1.0` | Volume dos sons de feedback, de `0.0` a `2.0`. |
